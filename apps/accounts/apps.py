@@ -1,3 +1,4 @@
+
 from django.apps import AppConfig
 
 
@@ -6,5 +7,6 @@ class AccountsConfig(AppConfig):
     verbose_name = 'User Accounts & Authentication'
 
     def ready(self):
-        # Import signals when app is ready
-        import apps.accounts.signals  # noqa
+        from apps.accounts.signals import register_audit_signals
+
+        register_audit_signals()

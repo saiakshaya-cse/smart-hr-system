@@ -1,8 +1,9 @@
+
 """
 Audit logging helper for cross-app audit trail.
 Can be imported by M3, M4, M5 to log audit events.
 """
-import json
+
 from django.contrib.contenttypes.models import ContentType
 from django.db import models
 
@@ -30,8 +31,8 @@ def log_audit(actor, action, obj, changes=None, request=None):
 
     # Prepare changes JSON
     changes_json = None
+
     if changes:
-        # Serialize changes, handling non-JSON-serializable values
         def serialize_val(val):
             if val is None:
                 return None
@@ -39,28 +40,33 @@ def log_audit(actor, action, obj, changes=None, request=None):
                 return val
             if isinstance(val, models.Model):
                 return str(val)
-            if hasattr(val, 'isoformat'):  # datetime/date
+            if hasattr(val, 'isoformat'):
                 return val.isoformat()
             return str(val)
 
         serialized = {}
+
         for field, change in changes.items():
             serialized[field] = {
                 'old': serialize_val(change.get('old')),
-                'new': serialize_val(change.get('new'))
+                'new': serialize_val(change.get('new')),
             }
+
         changes_json = serialized
 
     # Extract IP and User-Agent from request
     ip_address = None
-    user_agent = None
+    user_agent = ''
+
     if request:
         x_forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')
+
         if x_forwarded_for:
             ip_address = x_forwarded_for.split(',')[0].strip()
         else:
             ip_address = request.META.get('REMOTE_ADDR')
-        user_agent = request.META.get('HTTP_USER_AGENT', '')[:500]
+
+        user_agent = request.META.get('HTTP_USER_AGENT', '')[:500] or ''
 
     # Create object representation
     object_repr = str(obj)[:200]
@@ -83,6 +89,7 @@ def log_audit(actor, action, obj, changes=None, request=None):
 class AuditLogger:
     """
     Context manager for batch audit logging.
+
     Usage:
         with AuditLogger(request.user, request) as audit:
             audit.log('CREATE', new_employee)
@@ -96,7 +103,13 @@ class AuditLogger:
 
     def log(self, action, obj, changes=None):
         """Log an audit event."""
-        entry = log_audit(self.actor, action, obj, changes, self.request)
+        entry = log_audit(
+            self.actor,
+            action,
+            obj,
+            changes,
+            self.request,
+        )
         self.entries.append(entry)
         return entry
 
