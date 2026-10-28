@@ -5,9 +5,8 @@ from django.db import IntegrityError, transaction
 from django.db.models import Count
 from django.utils import timezone
 from apps.accounts.models import User
-
 from .models import Attendance
-
+from .events import emit_attendance_corrected
 def _ensure_own_record(employee,actor):
     if actor is None or employee.user_id != actor.pk:
         raise ValidationError(
@@ -115,7 +114,11 @@ def correct_attendance(
 
     if attendance is None:
         raise ValidationError("Attendance record not found.")
-
+    old_values = {
+        "status": attendance.status,
+        "check_in": attendance.check_in,
+        "check_out": attendance.check_out,
+    }
     if status is not None:
         if status not in Attendance.Status.values:
             raise ValidationError("Invalid attendance status.")
@@ -154,6 +157,9 @@ def correct_attendance(
         audit_actor=actor,
     )
 
+    emit_attendance_corrected(
+        attendance, actor, old_values, attendance.correction_note
+        )
     return attendance
 
 

@@ -21,7 +21,7 @@ Attendance and leave modules of the Smart HRMS.
 | Rules document (`docs/M4_ATTENDANCE_LEAVE_RULES.md`) | Maintained by the team lead; open items listed there |
 | Pages, forms and endpoints that call these services | Not started (M6; to be coordinated) |
 | Quota and carry-forward settings | Not started |
-| Events for email notifications (M5) | Not started (Week 3) |
+| Events for email notifications (M5) | Done |
 | Dashboard aggregates | Not started (Week 4) |
 
 ---

@@ -3,16 +3,14 @@ from unittest.mock import patch
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
 from django.test import TestCase
-
 from apps.employees.models import Employee
 from apps.attendance.models import Attendance
 from .models import LeaveBalance, LeaveRequest, LeaveStatusHistory, LeaveType, PublicHoliday
 from .services import  (calculate_working_days,calculate_working_days_by_year, change_leave_status, create_leave_request,restore_leave_balance,)
-
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-
+from .events import leave_cancelled, leave_decision_made
 from django.db import(
     close_old_connections,
       connection,
@@ -20,6 +18,8 @@ from django.db import(
       transaction,
 )
 from django.test import TransactionTestCase
+
+
 
 
 class LeaveStatusTransitionTests(TestCase):
@@ -328,7 +328,144 @@ class LeaveStatusTransitionTests(TestCase):
             leave.restoration_status,
             LeaveRequest.RestorationStatus.COMPLETED,
         )
+    def _listen_for_decisions(self):
+        received = []
 
+        def receiver(sender, **kwargs):
+            received.append(kwargs)
+
+        leave_decision_made.connect(receiver)
+        self.addCleanup(leave_decision_made.disconnect, receiver)
+        return received
+
+    def test_approval_emits_leave_decision_event(self):
+        received = self._listen_for_decisions()
+        leave = self.create_leave_request()
+        self.create_leave_balance(remaining_days=5)
+
+        with self.captureOnCommitCallbacks(execute=True):
+            change_leave_status(
+                leave.pk, LeaveRequest.Status.APPROVED,
+                changed_by=self.user, remarks="Approved",
+            )
+
+        self.assertEqual(len(received), 1)
+        event = received[0]
+        self.assertEqual(event["leave_request_id"], leave.pk)
+        self.assertEqual(event["employee_id"], self.employee.pk)
+        self.assertEqual(event["old_status"], "PENDING")
+        self.assertEqual(event["new_status"], "APPROVED")
+        self.assertEqual(event["decided_by_id"], self.user.pk)
+        self.assertEqual(event["remarks"], "Approved")
+        self.assertIsNotNone(event["decided_at"])
+
+    def test_rejection_for_insufficient_balance_emits_rejected_event(self):
+        received = self._listen_for_decisions()
+        leave = self.create_leave_request()
+        self.create_leave_balance(remaining_days=0)
+
+        with self.captureOnCommitCallbacks(execute=True):
+            change_leave_status(
+                leave.pk, LeaveRequest.Status.APPROVED,
+                changed_by=self.user, remarks="Approving",
+            )
+
+        self.assertEqual(len(received), 1)
+        self.assertEqual(received[0]["new_status"], "REJECTED")
+
+    def test_cancellation_emits_no_decision_event(self):
+        received = self._listen_for_decisions()
+        leave = self.create_leave_request()
+
+        with self.captureOnCommitCallbacks(execute=True):
+            change_leave_status(
+                leave.pk, LeaveRequest.Status.CANCELLED,
+                changed_by=self.user, remarks="Cancelled",
+            )
+
+        self.assertEqual(received, [])
+
+    def test_failed_decision_emits_no_event(self):
+        received = self._listen_for_decisions()
+        other_user = get_user_model().objects.create_user(
+            email="not_hr@example.com", password="test-password-123",
+        )
+        leave = self.create_leave_request()
+
+        with self.captureOnCommitCallbacks(execute=True):
+            with self.assertRaises(ValidationError):
+                change_leave_status(
+                    leave.pk, LeaveRequest.Status.APPROVED,
+                    changed_by=other_user, remarks="Not allowed",
+                )
+
+        self.assertEqual(received, [])
+    def _listen_for_cancellations(self):
+        received = []
+
+        def receiver(sender, **kwargs):
+            received.append(kwargs)
+
+        leave_cancelled.connect(receiver)
+        self.addCleanup(leave_cancelled.disconnect, receiver)
+        return received
+
+    def test_cancellation_emits_cancelled_event_not_decision(self):
+        decisions = self._listen_for_decisions()
+        cancellations = self._listen_for_cancellations()
+        leave = self.create_leave_request()
+
+        with self.captureOnCommitCallbacks(execute=True):
+            change_leave_status(
+                leave.pk, LeaveRequest.Status.CANCELLED,
+                changed_by=self.user, remarks="Cancelled by HR",
+            )
+
+        self.assertEqual(decisions, [])
+        self.assertEqual(len(cancellations), 1)
+        event = cancellations[0]
+        self.assertEqual(event["leave_request_id"], leave.pk)
+        self.assertEqual(event["employee_id"], self.employee.pk)
+        self.assertEqual(event["old_status"], "PENDING")
+        self.assertEqual(event["new_status"], "CANCELLED")
+        self.assertEqual(event["cancelled_by_id"], self.user.pk)
+        self.assertFalse(event["cancelled_by_owner"])
+        self.assertEqual(event["remarks"], "Cancelled by HR")
+        self.assertIsNotNone(event["cancelled_at"])
+
+    def test_cancellation_by_owner_is_flagged(self):
+        cancellations = self._listen_for_cancellations()
+        employee_user = get_user_model().objects.create_user(
+            email="owner_cancel@example.com", password="test-password-123",
+        )
+        self.employee.user = employee_user
+        self.employee.save(update_fields=["user"])
+        leave = self.create_leave_request()
+
+        with self.captureOnCommitCallbacks(execute=True):
+            change_leave_status(
+                leave.pk, LeaveRequest.Status.CANCELLED,
+                changed_by=employee_user, remarks="Plans changed",
+            )
+
+        self.assertEqual(len(cancellations), 1)
+        self.assertTrue(cancellations[0]["cancelled_by_owner"])
+
+    def test_failed_cancellation_emits_no_event(self):
+        cancellations = self._listen_for_cancellations()
+        other_user = get_user_model().objects.create_user(
+            email="stranger@example.com", password="test-password-123",
+        )
+        leave = self.create_leave_request()
+
+        with self.captureOnCommitCallbacks(execute=True):
+            with self.assertRaises(ValidationError):
+                change_leave_status(
+                    leave.pk, LeaveRequest.Status.CANCELLED,
+                    changed_by=other_user, remarks="Not mine",
+                )
+
+        self.assertEqual(cancellations, [])
         
 class LeaveApplicationValidationTests(TestCase):
     @classmethod

@@ -6,7 +6,7 @@ from .models import LeaveBalance, LeaveRequest, LeaveStatusHistory, PublicHolida
 from apps.attendance.models import Attendance
 from apps.accounts.audit import log_audit
 from apps.employees.models import Employee
-
+from .events import emit_leave_cancelled, emit_leave_decision
 
 ALLOWED_TRANSITIONS = {
     LeaveRequest.Status.PENDING: {
@@ -428,5 +428,11 @@ def change_leave_status(
             "remarks": {"old": None, "new": remarks},
         },
     )
-
+    if new_status in {
+        LeaveRequest.Status.APPROVED,
+        LeaveRequest.Status.REJECTED,
+    }:
+        emit_leave_decision(leave_request, old_status, changed_by)
+    elif new_status == LeaveRequest.Status.CANCELLED:
+        emit_leave_cancelled(leave_request, old_status, changed_by, remarks)
     return leave_request
